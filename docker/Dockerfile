@@ -5,8 +5,16 @@
 #
 # BUILD REQUIREMENTS:
 # 1. Base images must exist in registry (built via Dockerfile.build)
+#    Default tag: fossvps-mod (override with --build-arg BASE_VERSION=<tag>)
 # 2. Frontend must be pre-built (via ./scripts/ci/frontend-build)
 # 3. Use docker buildx for multi-arch support
+#
+# USAGE:
+#   # Use default tag (fossvps-mod)
+#   docker build -f docker/Dockerfile .
+#
+#   # Override base image tag
+#   docker build --build-arg BASE_VERSION=v2.13.5 -f docker/Dockerfile .
 #
 # BASE IMAGE DEPENDENCIES:
 # - testca-base: Provides root CA certificate for SSL testing
@@ -35,7 +43,7 @@
 # Build arguments
 ARG REGISTRY=ghcr.io
 ARG IMAGE_NAME=shayneeo/fossvps-npm
-ARG BASE_VERSION=latest
+ARG BASE_VERSION=fossvps-mod
 ARG TARGETPLATFORM
 
 # Build metadata

@@ -14,17 +14,48 @@
 # - testca-base: Test Certificate Authority (for SSL testing)
 # - nginx-base: Main runtime base (nginx + certbot + Node.js)
 #
-# Usage:
+# Usage Examples:
+#
+# Build for branch (fossvps-mod):
 #   docker buildx build -f docker/Dockerfile.build \
 #     --target testca-base \
-#     --build-arg BUILD_VERSION=v2.13.5 \
+#     --build-arg BUILD_VERSION=2.13.5-m1 \
+#     --build-arg BUILD_COMMIT=$(git rev-parse --short HEAD) \
+#     --build-arg BUILD_DATE=$(date '+%Y-%m-%d %T %Z') \
+#     -t ghcr.io/shayneeo/fossvps-npm-testca:fossvps-mod .
+#
+#   docker buildx build -f docker/Dockerfile.build \
+#     --target nginx-base \
+#     --build-arg BUILD_VERSION=2.13.5-m1 \
+#     --build-arg BUILD_COMMIT=$(git rev-parse --short HEAD) \
+#     --build-arg BUILD_DATE=$(date '+%Y-%m-%d %T %Z') \
+#     -t ghcr.io/shayneeo/fossvps-npm-base:fossvps-mod .
+#
+# Build for release tag (v2.13.5):
+#   docker buildx build -f docker/Dockerfile.build \
+#     --target testca-base \
+#     --build-arg BUILD_VERSION=2.13.5 \
+#     --build-arg BUILD_COMMIT=$(git rev-parse --short HEAD) \
+#     --build-arg BUILD_DATE=$(date '+%Y-%m-%d %T %Z') \
 #     -t ghcr.io/shayneeo/fossvps-npm-testca:v2.13.5 .
 #
 #   docker buildx build -f docker/Dockerfile.build \
 #     --target nginx-base \
-#     --build-arg BUILD_VERSION=v2.13.5 \
+#     --build-arg BUILD_VERSION=2.13.5 \
+#     --build-arg BUILD_COMMIT=$(git rev-parse --short HEAD) \
+#     --build-arg BUILD_DATE=$(date '+%Y-%m-%d %T %Z') \
 #     -t ghcr.io/shayneeo/fossvps-npm-base:v2.13.5 .
+#
+# NOTE: The GitHub Actions workflow automatically builds and tags these images.
+# The tag format is: <branch-or-tag>[-<platform-suffix>]
+# Examples: fossvps-mod-amd64, fossvps-mod-arm64, v2.13.5-amd64, v2.13.5-arm64
 
+# Build arguments
+# BUILD_VERSION: Version from .version file (e.g., "2.13.5-m1" or "2.13.5")
+# BUILD_COMMIT: Git commit hash (short format)
+# BUILD_DATE: Build timestamp
+# REGISTRY: Container registry (default: ghcr.io)
+# IMAGE_NAME: Image name without registry (default: shayneeo/fossvps-npm)
 ARG BUILD_VERSION
 ARG BUILD_COMMIT
 ARG BUILD_DATE
@@ -36,7 +67,7 @@ ARG IMAGE_NAME=shayneeo/fossvps-npm
 # ============================================================================
 # PURPOSE: Provides root CA certificate for SSL certificate testing
 # SOURCE: nginxproxymanager/testca (upstream test CA image)
-# USAGE: Only the root CA cert file is copied from this image (see Dockerfile line 59)
+# USAGE: Only the root CA cert file is copied from this image (see Dockerfile line 106)
 # WHY VERSIONED: Track which test CA version is used for consistency
 FROM nginxproxymanager/testca AS testca-base
 
