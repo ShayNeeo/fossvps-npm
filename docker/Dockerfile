@@ -1,46 +1,17 @@
-# Dockerfile - Main application image
+# Dockerfile - Simple Runner Image
 #
-# This Dockerfile builds the final Nginx Proxy Manager application image.
-# It requires base images to be built first using Dockerfile.build.
-#
-# BUILD REQUIREMENTS:
-# 1. Base images must exist in registry (built via Dockerfile.build)
-#    Default tag: fossvps-mod (override with --build-arg BASE_VERSION=<tag>)
-# 2. Frontend must be pre-built (via ./scripts/ci/frontend-build)
-# 3. Use docker buildx for multi-arch support
+# PURPOSE:
+# This image is a lightweight runtime that assumes all build artifacts
+# (frontend dist, backend node_modules) already exist on the host filesystem.
 #
 # USAGE:
-#   # Use default tag (fossvps-mod)
-#   docker build -f docker/Dockerfile .
+# 1. Build frontend: cd frontend && yarn install && yarn build
+# 2. Build backend: cd backend && yarn install --production
+# 3. Build docker: docker build -f docker/Dockerfile .
 #
-#   # Override base image tag
-#   docker build --build-arg BASE_VERSION=v2.13.5 -f docker/Dockerfile .
-#
-# BASE IMAGE DEPENDENCIES:
-# - testca-base: Provides root CA certificate for SSL testing
-# - nginx-base: Main runtime (nginx + certbot + Node.js)
-#
-# WHY DIFFERENT BASE IMAGES?
-# =========================
-# 1. testca-base (testca):
-#    - Purpose: Only provides /home/step/certs/root_ca.crt file
-#    - Used for: SSL certificate testing in development/CI
-#    - Why separate: Lightweight, only needed for one file copy
-#    - Source: nginxproxymanager/testca (upstream)
-#
-# 2. nginx-base (main base):
-#    - Purpose: Complete runtime environment
-#    - Contains: Nginx, Certbot, Node.js, system dependencies
-#    - Why separate: Heavy image, changes infrequently, benefits from caching
-#    - Source: nginxproxymanager/nginx-full:certbot-node (upstream)
-#
-# This separation allows:
-# - Better caching (base images rebuild less often)
-# - Version tracking (know exactly which upstream versions are used)
-# - Multi-arch efficiency (build base once per platform, reuse)
-# - Registry management (base images can be shared across projects)
+# This is ideal for local development or CI/CD pipelines where the
+# build artifacts are managed outside of Docker.
 
-# Build arguments
 ARG REGISTRY=ghcr.io
 ARG IMAGE_NAME=shayneeo/fossvps-npm
 ARG BASE_VERSION=fossvps-mod
@@ -54,15 +25,11 @@ ARG BUILD_DATE
 # ============================================================================
 # STAGE 1: Extract test CA certificate
 # ============================================================================
-# Pull testca base image from registry (built via Dockerfile.build)
-# We only need the root CA certificate file from this image
 FROM ${REGISTRY}/${IMAGE_NAME}-testca:${BASE_VERSION} AS testca
 
 # ============================================================================
 # STAGE 2: Main application image
 # ============================================================================
-# Pull nginx-base from registry (built via Dockerfile.build)
-# This is our main runtime base with nginx, certbot, and Node.js
 FROM ${REGISTRY}/${IMAGE_NAME}-base:${BASE_VERSION}
 
 ARG TARGETPLATFORM
@@ -70,8 +37,7 @@ ARG BUILD_VERSION
 ARG BUILD_COMMIT
 ARG BUILD_DATE
 
-# Environment variables for s6-overlay and application
-# See: https://github.com/just-containers/s6-overlay/blob/master/README.md
+# Environment variables
 ENV SUPPRESS_NO_CONFIG_WARNING=1 \
 	S6_BEHAVIOUR_IF_STAGE2_FAILS=1 \
 	S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0 \
@@ -91,39 +57,30 @@ RUN echo "fs.file-max = 65535" > /etc/sysctl.conf \
 	&& apt-get clean \
 	&& rm -rf /var/lib/apt/lists/*
 
-# Install s6-overlay for process management
+# Install s6-overlay
 COPY docker/scripts/install-s6 /tmp/install-s6
 RUN /tmp/install-s6 "${TARGETPLATFORM}" && rm -f /tmp/install-s6
 
-# Expose ports
-# 80: HTTP, 81: Admin UI, 443: HTTPS
 EXPOSE 80 81 443
 
-# Copy application code
+# Copy PRE-BUILT artifacts from the host
+# Frontend must be in frontend/dist/
+# Backend must have node_modules/
 COPY backend       /app
 COPY frontend/dist /app/frontend
 
-# Install Node.js dependencies
-WORKDIR /app
-RUN yarn install \
-	&& yarn cache clean
-
 # Copy configuration files and root CA certificate
-# (Copy late to limit cache-busting by modifications)
 COPY docker/rootfs /
 COPY --from=testca /home/step/certs/root_ca.crt /etc/ssl/certs/NginxProxyManager.crt
 
-# Cleanup: Remove dev-only files
+# Cleanup
 RUN rm -rf /etc/s6-overlay/s6-rc.d/user/contents.d/frontend /etc/nginx/conf.d/dev.conf \
 	&& chmod 644 /etc/logrotate.d/nginx-proxy-manager
 
-# Volume for persistent data
+WORKDIR /app
 VOLUME [ "/data" ]
-
-# Entrypoint
 ENTRYPOINT [ "/init" ]
 
-# Image metadata
 LABEL org.label-schema.schema-version="1.0" \
 	org.label-schema.license="MIT" \
 	org.label-schema.name="nginx-proxy-manager" \

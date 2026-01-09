@@ -1,61 +1,17 @@
-# Dockerfile.build - Builds base images with version preservation
+# Dockerfile.build - Self-contained "Build All Things" Dockerfile
 #
 # PURPOSE:
-# This file creates versioned base images from upstream sources. These base images
-# are then used by the main Dockerfile to ensure consistent, versioned dependencies.
-#
-# WHY SEPARATE BASE IMAGES?
-# 1. Version Control: Track which upstream versions are used in each release
-# 2. Caching: Base images change less frequently than application code
-# 3. Multi-arch: Build base images once per platform, reuse across builds
-# 4. Registry: Push base images to your registry so main Dockerfile can pull them
+# This file is a multi-stage Dockerfile that builds the entire application.
+# It can produce base images or the final, ready-to-run production image.
 #
 # TARGETS:
 # - testca-base: Test Certificate Authority (for SSL testing)
 # - nginx-base: Main runtime base (nginx + certbot + Node.js)
-#
-# Usage Examples:
-#
-# Build for branch (fossvps-mod):
-#   docker buildx build -f docker/Dockerfile.build \
-#     --target testca-base \
-#     --build-arg BUILD_VERSION=2.13.5-m1 \
-#     --build-arg BUILD_COMMIT=$(git rev-parse --short HEAD) \
-#     --build-arg BUILD_DATE=$(date '+%Y-%m-%d %T %Z') \
-#     -t ghcr.io/shayneeo/fossvps-npm-testca:fossvps-mod .
-#
-#   docker buildx build -f docker/Dockerfile.build \
-#     --target nginx-base \
-#     --build-arg BUILD_VERSION=2.13.5-m1 \
-#     --build-arg BUILD_COMMIT=$(git rev-parse --short HEAD) \
-#     --build-arg BUILD_DATE=$(date '+%Y-%m-%d %T %Z') \
-#     -t ghcr.io/shayneeo/fossvps-npm-base:fossvps-mod .
-#
-# Build for release tag (v2.13.5):
-#   docker buildx build -f docker/Dockerfile.build \
-#     --target testca-base \
-#     --build-arg BUILD_VERSION=2.13.5 \
-#     --build-arg BUILD_COMMIT=$(git rev-parse --short HEAD) \
-#     --build-arg BUILD_DATE=$(date '+%Y-%m-%d %T %Z') \
-#     -t ghcr.io/shayneeo/fossvps-npm-testca:v2.13.5 .
-#
-#   docker buildx build -f docker/Dockerfile.build \
-#     --target nginx-base \
-#     --build-arg BUILD_VERSION=2.13.5 \
-#     --build-arg BUILD_COMMIT=$(git rev-parse --short HEAD) \
-#     --build-arg BUILD_DATE=$(date '+%Y-%m-%d %T %Z') \
-#     -t ghcr.io/shayneeo/fossvps-npm-base:v2.13.5 .
-#
-# NOTE: The GitHub Actions workflow automatically builds and tags these images.
-# The tag format is: <branch-or-tag>[-<platform-suffix>]
-# Examples: fossvps-mod-amd64, fossvps-mod-arm64, v2.13.5-amd64, v2.13.5-arm64
+# - frontend-builder: Stage that compiles the React frontend
+# - backend-builder: Stage that installs production backend dependencies
+# - production: The final, fully-built production image
 
 # Build arguments
-# BUILD_VERSION: Version from .version file (e.g., "2.13.5-m1" or "2.13.5")
-# BUILD_COMMIT: Git commit hash (short format)
-# BUILD_DATE: Build timestamp
-# REGISTRY: Container registry (default: ghcr.io)
-# IMAGE_NAME: Image name without registry (default: shayneeo/fossvps-npm)
 ARG BUILD_VERSION
 ARG BUILD_COMMIT
 ARG BUILD_DATE
@@ -65,16 +21,10 @@ ARG IMAGE_NAME=shayneeo/fossvps-npm
 # ============================================================================
 # TARGET: testca-base
 # ============================================================================
-# PURPOSE: Provides root CA certificate for SSL certificate testing
-# SOURCE: nginxproxymanager/testca (upstream test CA image)
-# USAGE: Only the root CA cert file is copied from this image (see Dockerfile line 106)
-# WHY VERSIONED: Track which test CA version is used for consistency
 FROM nginxproxymanager/testca AS testca-base
-
 ARG BUILD_VERSION
 ARG BUILD_COMMIT
 ARG BUILD_DATE
-
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
 	org.opencontainers.image.revision="${BUILD_COMMIT}" \
 	org.opencontainers.image.created="${BUILD_DATE}" \
@@ -84,22 +34,100 @@ LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
 # ============================================================================
 # TARGET: nginx-base
 # ============================================================================
-# PURPOSE: Main runtime base image containing:
-#   - Nginx web server
-#   - Certbot for Let's Encrypt certificates
-#   - Node.js runtime
-# SOURCE: nginxproxymanager/nginx-full:certbot-node (upstream)
-# USAGE: This is the primary base image for the application
-# WHY VERSIONED: Critical dependency - tracks exact upstream version used
 FROM nginxproxymanager/nginx-full:certbot-node AS nginx-base
-
 ARG BUILD_VERSION
 ARG BUILD_COMMIT
 ARG BUILD_DATE
 ARG TARGETPLATFORM
-
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
 	org.opencontainers.image.revision="${BUILD_COMMIT}" \
 	org.opencontainers.image.created="${BUILD_DATE}" \
 	org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm" \
 	org.opencontainers.image.description="Nginx + Certbot + Node.js base image with version metadata"
+
+# ============================================================================
+# TARGET: frontend-builder
+# ============================================================================
+FROM nginx-base AS frontend-builder
+ARG BUILD_VERSION
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/yarn.lock ./
+RUN yarn install
+COPY frontend .
+RUN npm version --allow-same-version --no-commit-hooks --no-git-tag-version "${BUILD_VERSION}" \
+	&& yarn locale-compile \
+	&& yarn build
+
+# ============================================================================
+# TARGET: backend-builder
+# ============================================================================
+FROM nginx-base AS backend-builder
+ARG BUILD_VERSION
+WORKDIR /app
+COPY backend/package.json backend/yarn.lock ./
+RUN yarn install --production
+COPY backend .
+RUN npm version --allow-same-version --no-commit-hooks --no-git-tag-version "${BUILD_VERSION}"
+
+# ============================================================================
+# TARGET: production (The "Simple" pre-built image)
+# ============================================================================
+FROM nginx-base AS production
+ARG TARGETPLATFORM
+ARG BUILD_VERSION
+ARG BUILD_COMMIT
+ARG BUILD_DATE
+
+# Environment variables for s6-overlay and application
+ENV SUPPRESS_NO_CONFIG_WARNING=1 \
+	S6_BEHAVIOUR_IF_STAGE2_FAILS=1 \
+	S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0 \
+	S6_FIX_ATTRS_HIDDEN=1 \
+	S6_KILL_FINISH_MAXTIME=10000 \
+	S6_VERBOSITY=1 \
+	NODE_ENV=production \
+	NPM_BUILD_VERSION="${BUILD_VERSION}" \
+	NPM_BUILD_COMMIT="${BUILD_COMMIT}" \
+	NPM_BUILD_DATE="${BUILD_DATE}" \
+	NODE_OPTIONS="--openssl-legacy-provider"
+
+# Install system dependencies
+RUN echo "fs.file-max = 65535" > /etc/sysctl.conf \
+	&& apt-get update \
+	&& apt-get install -y --no-install-recommends jq logrotate \
+	&& apt-get clean \
+	&& rm -rf /var/lib/apt/lists/*
+
+# Install s6-overlay
+COPY docker/scripts/install-s6 /tmp/install-s6
+RUN /tmp/install-s6 "${TARGETPLATFORM}" && rm -f /tmp/install-s6
+
+EXPOSE 80 81 443
+
+# Copy pre-built backend and frontend artifacts from builders
+COPY --from=backend-builder /app /app
+COPY --from=frontend-builder /app/frontend/dist /app/frontend
+
+# Copy configuration files and root CA certificate
+COPY docker/rootfs /
+COPY --from=testca-base /home/step/certs/root_ca.crt /etc/ssl/certs/NginxProxyManager.crt
+
+# Cleanup
+RUN rm -rf /etc/s6-overlay/s6-rc.d/user/contents.d/frontend /etc/nginx/conf.d/dev.conf \
+	&& chmod 644 /etc/logrotate.d/nginx-proxy-manager
+
+WORKDIR /app
+VOLUME [ "/data" ]
+ENTRYPOINT [ "/init" ]
+
+LABEL org.label-schema.schema-version="1.0" \
+	org.label-schema.license="MIT" \
+	org.label-schema.name="nginx-proxy-manager" \
+	org.label-schema.description="Docker container for managing Nginx proxy hosts with a simple, powerful interface " \
+	org.label-schema.url="https://github.com/ShayNeeo/fossvps-npm" \
+	org.label-schema.vcs-url="https://github.com/ShayNeeo/fossvps-npm.git" \
+	org.label-schema.version="${BUILD_VERSION}" \
+	org.opencontainers.image.version="${BUILD_VERSION}" \
+	org.opencontainers.image.revision="${BUILD_COMMIT}" \
+	org.opencontainers.image.created="${BUILD_DATE}" \
+	org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm"
