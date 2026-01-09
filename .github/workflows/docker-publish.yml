@@ -20,7 +20,7 @@ on:
 env:
   # Use docker.io for Docker Hub if empty
   REGISTRY: ghcr.io
-  # github.repository as <account>/<repo>
+  # github.repository as <account>/<repo> (will be converted to lowercase in job)
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
@@ -48,6 +48,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # Convert repository name to lowercase for Docker compatibility
+      - name: Set lowercase image name
+        id: image_name
+        run: |
+          echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
       # Set up BuildKit Docker container builder to be able to build
       # multi-platform images and export cache
@@ -121,6 +127,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # Convert repository name to lowercase for Docker compatibility
+      - name: Set lowercase image name
+        run: |
+          echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
       # Extract metadata (tags, labels) for Docker
       # https://github.com/docker/metadata-action
