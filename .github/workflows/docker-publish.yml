@@ -24,8 +24,86 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # Build base images with version preservation
+  build-base:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            tag_suffix: -amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            tag_suffix: -arm64
+    
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set lowercase image name
+        run: |
+          echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3.0.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Gather version info
+        id: version_meta
+        run: |
+          echo "BUILD_VERSION=\"$(cat .version)\"" > $GITHUB_OUTPUT
+          echo "BUILD_DATE=\"$(date '+%Y-%m-%d %T %Z')\"" >> $GITHUB_OUTPUT
+          echo "BUILD_COMMIT=\"$(git log -n 1 --format=%h)\"" >> $GITHUB_OUTPUT
+
+      - name: Build and push testca base image
+        uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
+        with:
+          context: .
+          file: docker/Dockerfile.build
+          target: testca-base
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            BUILD_VERSION=${{ steps.version_meta.outputs.BUILD_VERSION }}
+            BUILD_COMMIT=${{ steps.version_meta.outputs.BUILD_COMMIT }}
+            BUILD_DATE=${{ steps.version_meta.outputs.BUILD_DATE }}
+          push: ${{ github.event_name != 'pull_request' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/') }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-testca:${{ github.ref_name }}${{ matrix.tag_suffix }}
+          cache-from: type=gha,scope=base-testca-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=base-testca-${{ matrix.platform }}
+
+      - name: Build and push nginx base image
+        uses: docker/build-push-action@0565240e2d4ab88bba5387d719585280857ece09 # v5.0.0
+        with:
+          context: .
+          file: docker/Dockerfile.build
+          target: nginx-base
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            BUILD_VERSION=${{ steps.version_meta.outputs.BUILD_VERSION }}
+            BUILD_COMMIT=${{ steps.version_meta.outputs.BUILD_COMMIT }}
+            BUILD_DATE=${{ steps.version_meta.outputs.BUILD_DATE }}
+          push: ${{ github.event_name != 'pull_request' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/') }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-base:${{ github.ref_name }}${{ matrix.tag_suffix }}
+          cache-from: type=gha,scope=base-nginx-${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=base-nginx-${{ matrix.platform }}
+
   # Build images on native runners for each platform
   build:
+    needs: build-base
     strategy:
       fail-fast: false
       matrix:
@@ -101,9 +179,10 @@ jobs:
           file: docker/Dockerfile
           platforms: ${{ matrix.platform }}
           build-args: |
-            BUILD_COMMIT=${{ env.BUILD_COMMIT }}
-            BUILD_VERSION=${{ env.BUILD_VERSION }}
-            BUILD_DATE=${{ env.BUILD_DATE }}
+            BUILD_COMMIT=${{ steps.additional_meta.outputs.BUILD_COMMIT }}
+            BUILD_VERSION=${{ steps.additional_meta.outputs.BUILD_VERSION }}
+            BUILD_DATE=${{ steps.additional_meta.outputs.BUILD_DATE }}
+            BASE_VERSION=${{ github.ref_name }}${{ matrix.tag_suffix }}
           push: ${{ github.event_name != 'pull_request' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/') }}
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}${{ matrix.tag_suffix }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -114,9 +193,52 @@ jobs:
           BUILD_VERSION: ${{ steps.additional_meta.outputs.BUILD_VERSION }}
           BUILD_DATE: ${{ steps.additional_meta.outputs.BUILD_DATE }}
 
+  # Merge manifests for base images
+  merge-base-manifest:
+    needs: build-base
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set lowercase image name
+        run: |
+          echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3.0.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push multi-arch manifests for base images
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          BASE_VERSION="${{ github.ref_name }}"
+          
+          # Create manifest for testca
+          docker buildx imagetools create -t "${IMAGE}-testca:${BASE_VERSION}" \
+            "${IMAGE}-testca:${BASE_VERSION}-amd64" \
+            "${IMAGE}-testca:${BASE_VERSION}-arm64"
+          
+          # Create manifest for nginx-base
+          docker buildx imagetools create -t "${IMAGE}-base:${BASE_VERSION}" \
+            "${IMAGE}-base:${BASE_VERSION}-amd64" \
+            "${IMAGE}-base:${BASE_VERSION}-arm64"
+
   # Merge manifests for multi-architecture support
   merge-manifest:
-    needs: build
+    needs: [build, merge-base-manifest]
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/')
     permissions:

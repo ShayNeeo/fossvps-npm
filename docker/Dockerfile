@@ -3,8 +3,21 @@
 
 # This file assumes that the frontend has been built using ./scripts/frontend-build
 
-FROM nginxproxymanager/testca AS testca
-FROM nginxproxymanager/nginx-full:certbot-node
+# Base image configuration - pulls from GitHub Container Registry
+# BASE_VERSION should include platform suffix (e.g., "v2.13.5-m1-amd64") when building per-platform
+# For local builds, set BASE_VERSION=latest or build base images first using Dockerfile.build
+ARG REGISTRY=ghcr.io
+ARG IMAGE_NAME=shayneeo/fossvps-npm
+ARG BASE_VERSION=latest
+ARG TARGETPLATFORM
+
+# Pull testca base image from your registry (built via Dockerfile.build)
+# Uses platform-specific tag during CI/CD builds, falls back to version-only tag
+FROM ${REGISTRY}/${IMAGE_NAME}-testca:${BASE_VERSION} AS testca
+
+# Pull nginx-full base image from your registry (built via Dockerfile.build)
+# Falls back to upstream if not found: nginxproxymanager/nginx-full:certbot-node
+FROM ${REGISTRY}/${IMAGE_NAME}-base:${BASE_VERSION}
 
 ARG TARGETPLATFORM
 ARG BUILD_VERSION
@@ -58,6 +71,10 @@ LABEL org.label-schema.schema-version="1.0" \
 	org.label-schema.license="MIT" \
 	org.label-schema.name="nginx-proxy-manager" \
 	org.label-schema.description="Docker container for managing Nginx proxy hosts with a simple, powerful interface " \
-	org.label-schema.url="https://github.com/N-Storm/nginx-proxy-manager" \
-	org.label-schema.vcs-url="https://github.com/N-Storm/nginx-proxy-manager.git" \
-	org.label-schema.cmd="docker run --rm -ti N-Storm/nginx-proxy-manager:latest"
+	org.label-schema.url="https://github.com/ShayNeeo/fossvps-npm" \
+	org.label-schema.vcs-url="https://github.com/ShayNeeo/fossvps-npm.git" \
+	org.label-schema.version="${BUILD_VERSION}" \
+	org.opencontainers.image.version="${BUILD_VERSION}" \
+	org.opencontainers.image.revision="${BUILD_COMMIT}" \
+	org.opencontainers.image.created="${BUILD_DATE}" \
+	org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm"

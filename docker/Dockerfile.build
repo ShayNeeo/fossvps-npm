@@ -1,0 +1,31 @@
+# Dockerfile.build - Builds base images with version preservation
+# This file pulls upstream base images and tags them with version information
+# Usage: docker buildx build -f docker/Dockerfile.build --build-arg BUILD_VERSION=<version> --target <target> -t ghcr.io/shayneeo/fossvps-npm-<target>:<version> .
+# Targets: testca-base, nginx-base
+
+ARG BUILD_VERSION
+ARG BUILD_COMMIT
+ARG BUILD_DATE
+ARG REGISTRY=ghcr.io
+ARG IMAGE_NAME=shayneeo/fossvps-npm
+
+# Build testca base image with version preservation
+FROM nginxproxymanager/testca AS testca-base
+ARG BUILD_VERSION
+ARG BUILD_COMMIT
+ARG BUILD_DATE
+LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
+	org.opencontainers.image.revision="${BUILD_COMMIT}" \
+	org.opencontainers.image.created="${BUILD_DATE}" \
+	org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm"
+
+# Build nginx-full:certbot-node base image with version preservation
+FROM nginxproxymanager/nginx-full:certbot-node AS nginx-base
+ARG BUILD_VERSION
+ARG BUILD_COMMIT
+ARG BUILD_DATE
+ARG TARGETPLATFORM
+LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
+	org.opencontainers.image.revision="${BUILD_COMMIT}" \
+	org.opencontainers.image.created="${BUILD_DATE}" \
+	org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm"
