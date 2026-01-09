@@ -115,7 +115,7 @@ RUN rm -rf /etc/s6-overlay/s6-rc.d/user/contents.d/frontend /etc/nginx/conf.d/de
 	&& chmod 644 /etc/logrotate.d/nginx-proxy-manager
 
 WORKDIR /app
-VOLUME [ "/data" ]
+VOLUME [ "/data", "/etc/letsencrypt" ]
 ENTRYPOINT [ "/init" ]
 
 # Default target when no target is specified
