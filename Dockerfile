@@ -1,15 +1,13 @@
-# Dockerfile.build - Self-contained "Build All Things" Dockerfile
-#
-# PURPOSE:
-# This file is a multi-stage Dockerfile that builds the entire application.
-# It can produce base images or the final, ready-to-run production image.
-#
-# TARGETS:
-# - testca-base: Test Certificate Authority (for SSL testing)
-# - nginx-base: Main runtime base (nginx + certbot + Node.js)
-# - frontend-builder: Stage that compiles the React frontend
-# - backend-builder: Stage that installs production backend dependencies
-# - production: The final, fully-built production image
+# This root Dockerfile is for Dokploy and other CI/CD platforms that expect a Dockerfile at the root.
+# It uses the production target from the self-contained build file.
+
+# To build this:
+#   docker build -t your-image-name .
+
+# Or specifically targeting production:
+#   docker build --target production -t your-image-name .
+
+# We include the full multi-stage build here for Dokploy compatibility.
 
 # Build arguments
 ARG BUILD_VERSION
@@ -70,7 +68,7 @@ COPY backend .
 RUN if [ -n "$BUILD_VERSION" ]; then npm version --allow-same-version --no-commit-hooks --no-git-tag-version "$BUILD_VERSION"; fi
 
 # ============================================================================
-# TARGET: production (The "Simple" pre-built image)
+# TARGET: production (The final Dokploy image)
 # ============================================================================
 FROM nginx-base AS production
 ARG TARGETPLATFORM
@@ -78,7 +76,7 @@ ARG BUILD_VERSION
 ARG BUILD_COMMIT
 ARG BUILD_DATE
 
-# Environment variables for s6-overlay and application
+# Environment variables
 ENV SUPPRESS_NO_CONFIG_WARNING=1 \
 	S6_BEHAVIOUR_IF_STAGE2_FAILS=1 \
 	S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0 \
@@ -120,14 +118,5 @@ WORKDIR /app
 VOLUME [ "/data" ]
 ENTRYPOINT [ "/init" ]
 
-LABEL org.label-schema.schema-version="1.0" \
-	org.label-schema.license="MIT" \
-	org.label-schema.name="nginx-proxy-manager" \
-	org.label-schema.description="Docker container for managing Nginx proxy hosts with a simple, powerful interface " \
-	org.label-schema.url="https://github.com/ShayNeeo/fossvps-npm" \
-	org.label-schema.vcs-url="https://github.com/ShayNeeo/fossvps-npm.git" \
-	org.label-schema.version="${BUILD_VERSION}" \
-	org.opencontainers.image.version="${BUILD_VERSION}" \
-	org.opencontainers.image.revision="${BUILD_COMMIT}" \
-	org.opencontainers.image.created="${BUILD_DATE}" \
-	org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm"
+# Default target when no target is specified
+FROM production
