@@ -12,11 +12,9 @@ ARG BASE_VERSION=latest
 ARG TARGETPLATFORM
 
 # Pull testca base image from your registry (built via Dockerfile.build)
-# Uses platform-specific tag during CI/CD builds, falls back to version-only tag
 FROM ${REGISTRY}/${IMAGE_NAME}-testca:${BASE_VERSION} AS testca
 
 # Pull nginx-full base image from your registry (built via Dockerfile.build)
-# Falls back to upstream if not found: nginxproxymanager/nginx-full:certbot-node
 FROM ${REGISTRY}/${IMAGE_NAME}-base:${BASE_VERSION}
 
 ARG TARGETPLATFORM

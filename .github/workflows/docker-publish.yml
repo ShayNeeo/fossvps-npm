@@ -65,6 +65,10 @@ jobs:
       - name: Gather version info
         id: version_meta
         run: |
+          if [ ! -f .version ]; then
+            echo "Error: .version file not found"
+            exit 1
+          fi
           echo "BUILD_VERSION=\"$(cat .version)\"" > $GITHUB_OUTPUT
           echo "BUILD_DATE=\"$(date '+%Y-%m-%d %T %Z')\"" >> $GITHUB_OUTPUT
           echo "BUILD_COMMIT=\"$(git log -n 1 --format=%h)\"" >> $GITHUB_OUTPUT
@@ -80,8 +84,8 @@ jobs:
             BUILD_VERSION=${{ steps.version_meta.outputs.BUILD_VERSION }}
             BUILD_COMMIT=${{ steps.version_meta.outputs.BUILD_COMMIT }}
             BUILD_DATE=${{ steps.version_meta.outputs.BUILD_DATE }}
-          push: ${{ github.event_name != 'pull_request' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/') }}
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-testca:${{ github.ref_name }}${{ matrix.tag_suffix }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-testca:${{ github.ref_name || github.head_ref || 'pr' }}${{ matrix.tag_suffix }}
           cache-from: type=gha,scope=base-testca-${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=base-testca-${{ matrix.platform }}
 
@@ -96,8 +100,8 @@ jobs:
             BUILD_VERSION=${{ steps.version_meta.outputs.BUILD_VERSION }}
             BUILD_COMMIT=${{ steps.version_meta.outputs.BUILD_COMMIT }}
             BUILD_DATE=${{ steps.version_meta.outputs.BUILD_DATE }}
-          push: ${{ github.event_name != 'pull_request' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/') }}
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-base:${{ github.ref_name }}${{ matrix.tag_suffix }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-base:${{ github.ref_name || github.head_ref || 'pr' }}${{ matrix.tag_suffix }}
           cache-from: type=gha,scope=base-nginx-${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=base-nginx-${{ matrix.platform }}
 
@@ -129,7 +133,6 @@ jobs:
 
       # Convert repository name to lowercase for Docker compatibility
       - name: Set lowercase image name
-        id: image_name
         run: |
           echo "IMAGE_NAME=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
@@ -160,6 +163,10 @@ jobs:
       - name: Gather additional metadata and update version info
         id: additional_meta
         run: |
+          if [ ! -f .version ]; then
+            echo "Error: .version file not found"
+            exit 1
+          fi
           echo "BUILD_VERSION=\"$(cat .version)\"" > $GITHUB_OUTPUT
           echo "BUILD_DATE=\"$(date '+%Y-%m-%d %T %Z')\"" >> $GITHUB_OUTPUT
           echo "BUILD_COMMIT=\"$(git log -n 1 --format=%h)\"" >> $GITHUB_OUTPUT
@@ -182,9 +189,9 @@ jobs:
             BUILD_COMMIT=${{ steps.additional_meta.outputs.BUILD_COMMIT }}
             BUILD_VERSION=${{ steps.additional_meta.outputs.BUILD_VERSION }}
             BUILD_DATE=${{ steps.additional_meta.outputs.BUILD_DATE }}
-            BASE_VERSION=${{ github.ref_name }}${{ matrix.tag_suffix }}
-          push: ${{ github.event_name != 'pull_request' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/') }}
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}${{ matrix.tag_suffix }}
+            BASE_VERSION=${{ github.ref_name || github.head_ref || 'pr' }}${{ matrix.tag_suffix }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name || github.head_ref || 'pr' }}${{ matrix.tag_suffix }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
@@ -197,7 +204,7 @@ jobs:
   merge-base-manifest:
     needs: build-base
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/')
+    if: github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
@@ -224,7 +231,7 @@ jobs:
       - name: Create and push multi-arch manifests for base images
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          BASE_VERSION="${{ github.ref_name }}"
+          BASE_VERSION="${{ github.ref_name || github.head_ref || 'pr' }}"
           
           # Create manifest for testca
           docker buildx imagetools create -t "${IMAGE}-testca:${BASE_VERSION}" \
@@ -240,7 +247,7 @@ jobs:
   merge-manifest:
     needs: [build, merge-base-manifest]
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/')
+    if: github.event_name != 'pull_request'
     permissions:
       contents: read
       packages: write
@@ -276,11 +283,16 @@ jobs:
       - name: Create and push multi-arch manifest
         run: |
           IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          BASE_VERSION="${{ github.ref_name }}"
+          BASE_VERSION="${{ github.ref_name || github.head_ref || 'pr' }}"
           
-          # Create manifest for each tag from metadata
+          # Create manifest for the platform-specific tag first
+          docker buildx imagetools create -t "${IMAGE}:${BASE_VERSION}" \
+            "${IMAGE}:${BASE_VERSION}-amd64" \
+            "${IMAGE}:${BASE_VERSION}-arm64"
+          
+          # Create manifest for each additional tag from metadata (if any)
           echo "${{ steps.meta.outputs.tags }}" | while read -r tag; do
-            if [[ -n "$tag" ]]; then
+            if [[ -n "$tag" ]] && [[ "$tag" != "${IMAGE}:${BASE_VERSION}" ]]; then
               docker buildx imagetools create -t "${tag}" \
                 "${IMAGE}:${BASE_VERSION}-amd64" \
                 "${IMAGE}:${BASE_VERSION}-arm64"
@@ -300,6 +312,7 @@ jobs:
       # transparency data even for private images, pass --force to cosign below.
       # https://github.com/sigstore/cosign
       - name: Sign the published Docker image
+        if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/')
         env:
           # https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-an-intermediate-environment-variable
           TAGS: ${{ steps.meta.outputs.tags }}
