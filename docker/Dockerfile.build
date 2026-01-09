@@ -1,7 +1,29 @@
 # Dockerfile.build - Builds base images with version preservation
-# This file pulls upstream base images and tags them with version information
-# Usage: docker buildx build -f docker/Dockerfile.build --build-arg BUILD_VERSION=<version> --target <target> -t ghcr.io/shayneeo/fossvps-npm-<target>:<version> .
-# Targets: testca-base, nginx-base
+#
+# PURPOSE:
+# This file creates versioned base images from upstream sources. These base images
+# are then used by the main Dockerfile to ensure consistent, versioned dependencies.
+#
+# WHY SEPARATE BASE IMAGES?
+# 1. Version Control: Track which upstream versions are used in each release
+# 2. Caching: Base images change less frequently than application code
+# 3. Multi-arch: Build base images once per platform, reuse across builds
+# 4. Registry: Push base images to your registry so main Dockerfile can pull them
+#
+# TARGETS:
+# - testca-base: Test Certificate Authority (for SSL testing)
+# - nginx-base: Main runtime base (nginx + certbot + Node.js)
+#
+# Usage:
+#   docker buildx build -f docker/Dockerfile.build \
+#     --target testca-base \
+#     --build-arg BUILD_VERSION=v2.13.5 \
+#     -t ghcr.io/shayneeo/fossvps-npm-testca:v2.13.5 .
+#
+#   docker buildx build -f docker/Dockerfile.build \
+#     --target nginx-base \
+#     --build-arg BUILD_VERSION=v2.13.5 \
+#     -t ghcr.io/shayneeo/fossvps-npm-base:v2.13.5 .
 
 ARG BUILD_VERSION
 ARG BUILD_COMMIT
@@ -9,23 +31,44 @@ ARG BUILD_DATE
 ARG REGISTRY=ghcr.io
 ARG IMAGE_NAME=shayneeo/fossvps-npm
 
-# Build testca base image with version preservation
+# ============================================================================
+# TARGET: testca-base
+# ============================================================================
+# PURPOSE: Provides root CA certificate for SSL certificate testing
+# SOURCE: nginxproxymanager/testca (upstream test CA image)
+# USAGE: Only the root CA cert file is copied from this image (see Dockerfile line 59)
+# WHY VERSIONED: Track which test CA version is used for consistency
 FROM nginxproxymanager/testca AS testca-base
+
 ARG BUILD_VERSION
 ARG BUILD_COMMIT
 ARG BUILD_DATE
+
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
 	org.opencontainers.image.revision="${BUILD_COMMIT}" \
 	org.opencontainers.image.created="${BUILD_DATE}" \
-	org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm"
+	org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm" \
+	org.opencontainers.image.description="Test CA base image with version metadata"
 
-# Build nginx-full:certbot-node base image with version preservation
+# ============================================================================
+# TARGET: nginx-base
+# ============================================================================
+# PURPOSE: Main runtime base image containing:
+#   - Nginx web server
+#   - Certbot for Let's Encrypt certificates
+#   - Node.js runtime
+# SOURCE: nginxproxymanager/nginx-full:certbot-node (upstream)
+# USAGE: This is the primary base image for the application
+# WHY VERSIONED: Critical dependency - tracks exact upstream version used
 FROM nginxproxymanager/nginx-full:certbot-node AS nginx-base
+
 ARG BUILD_VERSION
 ARG BUILD_COMMIT
 ARG BUILD_DATE
 ARG TARGETPLATFORM
+
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
 	org.opencontainers.image.revision="${BUILD_COMMIT}" \
 	org.opencontainers.image.created="${BUILD_DATE}" \
-	org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm"
+	org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm" \
+	org.opencontainers.image.description="Nginx + Certbot + Node.js base image with version metadata"
