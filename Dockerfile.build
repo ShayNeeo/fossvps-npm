@@ -1,22 +1,5 @@
-# Dockerfile.build - Self-contained "Build All Things" Dockerfile
-#
-# PURPOSE:
-# This file is a multi-stage Dockerfile that builds the entire application.
-# It can produce base images or the final, ready-to-run production image.
-#
-# TARGETS:
-# - testca-base: Test Certificate Authority (for SSL testing)
-# - nginx-base: Main runtime base (nginx + certbot + Node.js)
-# - frontend-builder: Stage that compiles the React frontend
-# - backend-builder: Stage that installs production backend dependencies
-# - production: The final, fully-built production image
-
-# Build arguments
-ARG BUILD_VERSION
-ARG BUILD_COMMIT
-ARG BUILD_DATE
-ARG REGISTRY=ghcr.io
-ARG IMAGE_NAME=shayneeo/fossvps-npm
+# Dockerfile.build - Builds FOSSVPS-NPM from source
+# Usage: docker build -f Dockerfile.build -t fossvps-npm:local .
 
 # ============================================================================
 # TARGET: testca-base
@@ -26,10 +9,9 @@ ARG BUILD_VERSION
 ARG BUILD_COMMIT
 ARG BUILD_DATE
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
-	org.opencontainers.image.revision="${BUILD_COMMIT}" \
-	org.opencontainers.image.created="${BUILD_DATE}" \
-	org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm" \
-	org.opencontainers.image.description="Test CA base image with version metadata"
+        org.opencontainers.image.revision="${BUILD_COMMIT}" \
+        org.opencontainers.image.created="${BUILD_DATE}" \
+        org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm"
 
 # ============================================================================
 # TARGET: nginx-base
@@ -40,10 +22,9 @@ ARG BUILD_COMMIT
 ARG BUILD_DATE
 ARG TARGETPLATFORM
 LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
-	org.opencontainers.image.revision="${BUILD_COMMIT}" \
-	org.opencontainers.image.created="${BUILD_DATE}" \
-	org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm" \
-	org.opencontainers.image.description="Nginx + Certbot + Node.js base image with version metadata"
+        org.opencontainers.image.revision="${BUILD_COMMIT}" \
+        org.opencontainers.image.created="${BUILD_DATE}" \
+        org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm"
 
 # ============================================================================
 # TARGET: frontend-builder
@@ -55,8 +36,8 @@ COPY frontend/package.json frontend/yarn.lock ./
 RUN yarn install
 COPY frontend .
 RUN if [ -n "$BUILD_VERSION" ]; then npm version --allow-same-version --no-commit-hooks --no-git-tag-version "$BUILD_VERSION"; fi \
-	&& yarn locale-compile \
-	&& yarn build
+        && yarn locale-compile \
+        && yarn build
 
 # ============================================================================
 # TARGET: backend-builder
@@ -70,7 +51,7 @@ COPY backend .
 RUN if [ -n "$BUILD_VERSION" ]; then npm version --allow-same-version --no-commit-hooks --no-git-tag-version "$BUILD_VERSION"; fi
 
 # ============================================================================
-# TARGET: production (The "Simple" pre-built image)
+# TARGET: production
 # ============================================================================
 FROM nginx-base AS production
 ARG TARGETPLATFORM
@@ -78,56 +59,40 @@ ARG BUILD_VERSION
 ARG BUILD_COMMIT
 ARG BUILD_DATE
 
-# Environment variables for s6-overlay and application
 ENV SUPPRESS_NO_CONFIG_WARNING=1 \
-	S6_BEHAVIOUR_IF_STAGE2_FAILS=1 \
-	S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0 \
-	S6_FIX_ATTRS_HIDDEN=1 \
-	S6_KILL_FINISH_MAXTIME=10000 \
-	S6_VERBOSITY=1 \
-	NODE_ENV=production \
-	NPM_BUILD_VERSION="${BUILD_VERSION}" \
-	NPM_BUILD_COMMIT="${BUILD_COMMIT}" \
-	NPM_BUILD_DATE="${BUILD_DATE}" \
-	NODE_OPTIONS="--openssl-legacy-provider"
+    S6_BEHAVIOUR_IF_STAGE2_FAILS=1 \
+    S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0 \
+    S6_FIX_ATTRS_HIDDEN=1 \
+    S6_KILL_FINISH_MAXTIME=10000 \
+    S6_VERBOSITY=1 \
+    NODE_ENV=production \
+    NPM_BUILD_VERSION="${BUILD_VERSION}" \
+    NPM_BUILD_COMMIT="${BUILD_COMMIT}" \
+    NPM_BUILD_DATE="${BUILD_DATE}" \
+    NODE_OPTIONS="--openssl-legacy-provider"
 
-# Install system dependencies
 RUN echo "fs.file-max = 65535" > /etc/sysctl.conf \
-	&& apt-get update \
-	&& apt-get install -y --no-install-recommends jq logrotate \
-	&& apt-get clean \
-	&& rm -rf /var/lib/apt/lists/*
+    && apt-get update \
+    && apt-get install -y --no-install-recommends jq logrotate \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install s6-overlay
-COPY docker/scripts/install-s6 /tmp/install-s6
+# Note: We moved /docker/scripts/install-s6 to ./scripts/install-s6
+COPY scripts/install-s6 /tmp/install-s6
 RUN /tmp/install-s6 "${TARGETPLATFORM}" && rm -f /tmp/install-s6
 
 EXPOSE 80 81 443
 
-# Copy pre-built backend and frontend artifacts from builders
 COPY --from=backend-builder /app /app
 COPY --from=frontend-builder /app/frontend/dist /app/frontend
 
-# Copy configuration files and root CA certificate
-COPY docker/rootfs /
+# Note: We moved /docker/rootfs to ./rootfs
+COPY rootfs /
 COPY --from=testca-base /home/step/certs/root_ca.crt /etc/ssl/certs/NginxProxyManager.crt
 
-# Cleanup
 RUN rm -rf /etc/s6-overlay/s6-rc.d/user/contents.d/frontend /etc/nginx/conf.d/dev.conf \
-	&& chmod 644 /etc/logrotate.d/nginx-proxy-manager
+    && chmod 644 /etc/logrotate.d/nginx-proxy-manager
 
 WORKDIR /app
-VOLUME [ "/data" ]
+VOLUME [ "/data", "/etc/letsencrypt" ]
 ENTRYPOINT [ "/init" ]
-
-LABEL org.label-schema.schema-version="1.0" \
-	org.label-schema.license="MIT" \
-	org.label-schema.name="nginx-proxy-manager" \
-	org.label-schema.description="Docker container for managing Nginx proxy hosts with a simple, powerful interface " \
-	org.label-schema.url="https://github.com/ShayNeeo/fossvps-npm" \
-	org.label-schema.vcs-url="https://github.com/ShayNeeo/fossvps-npm.git" \
-	org.label-schema.version="${BUILD_VERSION}" \
-	org.opencontainers.image.version="${BUILD_VERSION}" \
-	org.opencontainers.image.revision="${BUILD_COMMIT}" \
-	org.opencontainers.image.created="${BUILD_DATE}" \
-	org.opencontainers.image.source="https://github.com/ShayNeeo/fossvps-npm"

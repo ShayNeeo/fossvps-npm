@@ -1,0 +1,108 @@
+name: Build and Push NPM Image
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - '**'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/fossvps-npm
+
+jobs:
+  build-and-push:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+            tag_suffix: -amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            tag_suffix: -arm64
+    
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare image name (lowercase)
+        id: image
+        run: echo "name=$(echo ${{ env.IMAGE_NAME }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.build
+          push: true
+          # We only build for the specific platform of this runner
+          platforms: ${{ matrix.platform }}
+          # Tag with suffix (e.g. :sha-amd64) to allow merging later
+          tags: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ github.sha }}${{ matrix.tag_suffix }}
+          cache-from: type=gha,scope=${{ matrix.tag_suffix }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.tag_suffix }}
+
+  merge-manifest:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare image name (lowercase)
+        id: image
+        run: echo "name=$(echo ${{ env.IMAGE_NAME }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - name: Create and push manifest
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ steps.image.outputs.name }}"
+          SHA="${{ github.sha }}"
+          
+          # Definitions of source images - must match suffixes in build matrix
+          AMD64_IMG="${IMAGE}:${SHA}-amd64"
+          ARM64_IMG="${IMAGE}:${SHA}-arm64"
+          
+          # Create manifest for the SHA tag that refers to both arch images
+          docker buildx imagetools create -t "${IMAGE}:${SHA}" \
+            "${AMD64_IMG}" \
+            "${ARM64_IMG}"
+          
+          # Tag as latest if on main branch
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            docker buildx imagetools create -t "${IMAGE}:latest" \
+              "${IMAGE}:${SHA}"
+          fi
+          
+          # Tag as dev if on dev branch
+          if [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
+            docker buildx imagetools create -t "${IMAGE}:dev" \
+              "${IMAGE}:${SHA}"
+          fi
